@@ -14,10 +14,13 @@ ALLFILES= $(SOURCEFILES) $(TESTFILES) $(HEADERFILES)
 
 libGSUSB.so: $(ALLFILES)
 	cc $(PURECAP) $(CFLAGS) $(LIBFLAGS) $(SOURCEFILES) $(LFLAGS) -olibGSUSB.so
-	mv libGSUSB.so /usr/lib
+	cp libGSUSB.so /usr/lib
 	cc $(PURECAP) $(CFLAGS) $(TESTFILES) $(LFLAGS) -lGSUSB -otest
+	cc $(HYBRID) $(CFLAGS) $(LIBFLAGS) $(SOURCEFILES) $(LFLAGS) -olibGSUSBhy.so
+	cp libGSUSBhy.so /usr/lib64/libGSUSB.so
+	cc $(HYBRID) $(CFLAGS) $(TESTFILES) $(LFLAGS) -lGSUSB -otest_hy
 
 .PHONY: clean
 
 clean:
-	rm -f libGSUSB.so.*
+	rm -f libGSUSB.so

@@ -39,15 +39,15 @@ int main(void) {
   while(read < 1000) {
     int reply = gsusbRead(&ctx, &frame);
     if(GSUSB_OK == reply) {
-      LOGI(TAG, "Read Id: %u DLC: %u Data: %02X, %02X, %02X, %02X, %02X, %02X, %02X, %02X", 
-        frame.can_id, frame.len, frame.data[0], frame.data[1], frame.data[2], frame.data[3], frame.data[4], frame.data[5], frame.data[6], frame.data[7]);
-      read++;
-      LOGI(TAG, "read = %i", read);
+      LOGI(TAG, "Read Id: %u (%x) DLC: %u Data: %02X, %02X, %02X, %02X, %02X, %02X, %02X, %02X", 
+        frame.can_id, frame.can_id, frame.len, frame.data[0], frame.data[1], frame.data[2], frame.data[3], frame.data[4], frame.data[5], frame.data[6], frame.data[7]);
       if(frame.can_id != 0x101) {
+        read++;
+        LOGI(TAG, "read = %i", read);
         reply = gsusbWrite(&ctx, &frame2);
         switch(reply) {
           case GSUSB_OK:
-            LOGI(TAG, "Message sent!\n");
+            LOGI(TAG, "Message sent!");
             break;
           case GSUSB_ERROR_TIMEOUT:
             LOGE(TAG, "Message Tx timedout!");

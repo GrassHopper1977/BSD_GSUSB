@@ -276,6 +276,7 @@ int gsusbInit(struct gsusb_ctx *ctx) {
   int ret = libusb_init(&(ctx->libusb_ctx));
   if (ret < 0) {
     LOGE(TAG, "Failed to initialize libusb (ret = %d)\n", ret);
+    ctx->libusb_ctx = NULL;
     return GSUSB_ERROR_LIBUSB_INIT;
   }
   return GSUSB_OK;
