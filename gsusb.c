@@ -768,50 +768,49 @@ void handleRetries(struct gsusb_ctx *ctx) {
 }
 
 int read_packet(struct gsusb_ctx *ctx, struct can_frame* frame) {
-  int reply = GSUSB_ERROR_TIMEOUT;
   struct host_frame data;
   memset(&data, 0, sizeof(data));
   int len = 0;
+  uint64_t now = nanos();
+  printf("%10luns Before libusb_bulk_transfer()\n", nanos() - now);
   int ret = libusb_bulk_transfer(ctx->devh, ENDPOINT_IN, (uint8_t*) &data, sizeof(data), &len, 1);
+  printf("%10luns After libusb_bulk_transfer()\n", nanos() - now);
   if(ret == 0) {
-    if(len != sizeof(data)) {
-      LOGE(TAG, "Size mismatch! sizeof(data) = %lu, len = %u, ret = %x", sizeof(data), len, ret);
-      print_host_frame_raw(&data);
-      fflush(stdout);
-      reply = GSUSB_ERROR_GENERAL;
-    }
+    // if(len != sizeof(data)) {
+    //   // LOGE(TAG, "Size mismatch! sizeof(data) = %lu, len = %u, ret = %x", sizeof(data), len, ret);
+    //   // print_host_frame_raw(&data);
+    //   // fflush(stdout);
+    // }
 
     if(data.can_id & CAN_ERR_FLAG) {
-      print_host_frame(TAG, &data, 1, "");
-      print_host_frame_raw(&data);
+      // print_host_frame(TAG, &data, 1, "");
+      // print_host_frame_raw(&data);
     } else if((data.channel >= GSUSB_MAX_CHANNELS) || (data.can_dlc > CAN_MAX_DLC)) {
-      print_host_frame(TAG, &data, 1, "");
-      print_host_frame_raw(&data);
+      // print_host_frame(TAG, &data, 1, "");
+      // print_host_frame_raw(&data);
     } else {
       int tmp1 = release_tx_context(ctx, le32toh(data.echo_id));
-      if(tmp1 > 0) {
-        print_host_frame(TAG, &data, 0, "Context Released");
-      } else if(tmp1 == 0) {
-        print_host_frame(TAG, &data, 0, "");
-      } else if(tmp1 == -2) {
-        print_host_frame(TAG, &data, 1, "echo_id: %08x (%u) is invalid! TOO LARGE - ERROR!.", data.echo_id, data.echo_id);
+      // if(tmp1 > 0) {
+      //   print_host_frame(TAG, &data, 0, "Context Released");
+      // } else if(tmp1 == 0) {
+      //   print_host_frame(TAG, &data, 0, "");
+      // } else if(tmp1 == -2) {
+      //   print_host_frame(TAG, &data, 1, "echo_id: %08x (%u) is invalid! TOO LARGE - ERROR!.", data.echo_id, data.echo_id);
 
-        print_host_frame_raw(&data);
-        fflush(stdout);
-      } else if(tmp1 == -1) {
-        // print_host_frame("CAN", "IN", &data, 1, "Context Error");
-        print_host_frame(TAG, &data, 1, "echo_id %08x (%u) is invalid! MISMATCH with %08x (%u). - ERROR!.", data.echo_id, data.echo_id, ctx->tx_context[data.echo_id].echo_id, ctx->tx_context[data.echo_id].echo_id);
+      //   print_host_frame_raw(&data);
+      //   fflush(stdout);
+      // } else if(tmp1 == -1) {
+      //   // print_host_frame("CAN", "IN", &data, 1, "Context Error");
+      //   print_host_frame(TAG, &data, 1, "echo_id %08x (%u) is invalid! MISMATCH with %08x (%u). - ERROR!.", data.echo_id, data.echo_id, ctx->tx_context[data.echo_id].echo_id, ctx->tx_context[data.echo_id].echo_id);
 
-        print_host_frame_raw(&data);
-        fflush(stdout);
-      } else if(tmp1 < 0) {
-        print_host_frame(TAG, &data, 1, "Context Error");
+      //   print_host_frame_raw(&data);
+      //   fflush(stdout);
+      // } else if(tmp1 < 0) {
+      //   print_host_frame(TAG, &data, 1, "Context Error");
 
-        print_host_frame_raw(&data);
-        fflush(stdout);
-      }
-
-      // struct can_frame frame;
+      //   print_host_frame_raw(&data);
+      //   fflush(stdout);
+      // }
 
       frame->can_id = le32toh(data.can_id);
 
@@ -828,47 +827,54 @@ int read_packet(struct gsusb_ctx *ctx, struct can_frame* frame) {
         }
       }
 
-      reply = GSUSB_OK;
     }
-  } else if(ret != LIBUSB_ERROR_TIMEOUT) {
-    reply = GSUSB_ERROR_READING;
-    switch(ret) {
-    case LIBUSB_ERROR_TIMEOUT:
-      // print_host_frame("CAN", "IN", &data, 1, "LIBUSB_ERROR_TIMEOUT");
-      reply = GSUSB_ERROR_TIMEOUT;
-      break;
-    case LIBUSB_ERROR_PIPE:
-      print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_PIPE");
-      break;
-    case LIBUSB_ERROR_OVERFLOW:
-      print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_OVERFLOW");
-      break;
-    case LIBUSB_ERROR_NO_DEVICE:
-      print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_NO_DEVICE");
-      reply = GSUSB_ERROR_NO_DEVICE;
-      break;
-    case LIBUSB_ERROR_BUSY:
-      print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_BUSY");
-      break;
-    case LIBUSB_ERROR_INVALID_PARAM:
-      print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_INVALID_PARAM");
-      break;
-    default:
-      print_host_frame(TAG, &data, 1, "UKNOWN (0x%08x)", ret);
-      break;
-    }
-    fflush(stdout);
+  // } else if(ret != LIBUSB_ERROR_TIMEOUT) {
+  //   switch(ret) {
+  //   // case LIBUSB_ERROR_TIMEOUT:
+  //   //   // print_host_frame("CAN", "IN", &data, 1, "LIBUSB_ERROR_TIMEOUT");
+  //   //   break;
+  //   case LIBUSB_ERROR_PIPE:
+  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_PIPE");
+  //     break;
+  //   case LIBUSB_ERROR_OVERFLOW:
+  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_OVERFLOW");
+  //     break;
+  //   case LIBUSB_ERROR_NO_DEVICE:
+  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_NO_DEVICE");
+  //     break;
+  //   case LIBUSB_ERROR_BUSY:
+  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_BUSY");
+  //     break;
+  //   case LIBUSB_ERROR_INVALID_PARAM:
+  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_INVALID_PARAM");
+  //     break;
+  //   default:
+  //     print_host_frame(TAG, &data, 1, "UKNOWN (0x%08x)", ret);
+  //     break;
+  //   }
+  //   fflush(stdout);
   }
 
-  return reply;
+  return ret;
 }
 
 int gsusbRead(struct gsusb_ctx *ctx, struct can_frame* frame) {
-  int max = 0;
   int rep = GSUSB_ERROR_TIMEOUT;
-  while((GSUSB_ERROR_TIMEOUT == rep) && (max < GSUSB_MAX_RX_REQ)) {
-    rep = read_packet(ctx, frame);
-    max++;
+  int ret = read_packet(ctx, frame);
+
+  switch(ret) {
+    case 0:
+      rep = GSUSB_OK;
+      break;
+    case LIBUSB_ERROR_TIMEOUT:
+      rep = GSUSB_ERROR_TIMEOUT;
+      break;
+    case LIBUSB_ERROR_NO_DEVICE:
+      rep = GSUSB_ERROR_NO_DEVICE;
+      break;
+    default:
+      rep = GSUSB_ERROR_READING;
+      break;
   }
 
   if(GSUSB_ERROR_NO_DEVICE == rep) {
