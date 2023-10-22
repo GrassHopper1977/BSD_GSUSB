@@ -6,7 +6,12 @@
 #include <stdint.h>
 
 
-
+#ifndef FALSE
+#define FALSE 0
+#endif
+#ifndef TRUE
+#define TRUE 1
+#endif
 
 
 
@@ -30,6 +35,36 @@
 
 // There may be some 3 channel devices out there but not more.
 #define GSUSB_MAX_CHANNELS (3)
+
+// Mode message - mode
+enum gsusb_mode {
+  GSUSB_MODE_RESET = 0, // Reset a channel, turns it off
+  GSUSB_MODE_START,   // Start a channel
+};
+// Mode message - flags
+#define GSUSB_CTRLMODE_NORMAL                   (0)
+#define GSUSB_CTRLMODE_LOOPBACK                 (0x00000001)  // Bit 0
+#define GSUSB_CTRLMODE_LISTENONLY               (0x00000002)  // Bit 1
+#define GSUSB_CTRLMODE_3_SAMPLES                (0x00000004)  // Bit 2
+#define GSUSB_CTRLMODE_ONE_SHOT                 (0x00000010)  // Bit 3
+#define GSUSB_CTRLMODE_HW_TIMESTAMP             (0x00000020)  // Bit 4
+// #define GSUSB_CTRLMODE_INTENTIFY                (0x00000100)  // Bit 5
+// #define GSUSB_CTRLMODE_USER_ID_BIT              (0x00000200)  // Bit 6
+#define GSUSB_CTRLMODE_PAD_PKT_TO_MAX_PKT_SIZE  (0x00000400)  // Bit 7
+#define GSUSB_CTRLMODE_FD                       (0x00001000)  // Bit 8
+// #define GSUSB_CTRLMODE_REQ_USB_QUIRK_LPC546XX   (0x00002000)  // Bit 9
+// #define GSUSB_CTRLMODE_BT_CONST_EXT             (0x00004000)  // Bit 10
+// #define GSUSB_CTRLMODE_TERMINATION              (0x00001000)  // Bit 11
+#define GSUSB_CTRLMODE_BERR_REPORTING           (0x00010000)  // Bit 12
+// #define GSUSB_CTRLMODE_GET_STATE                (0x00020000)  // Bit 13
+
+/// @brief USB Mode struct
+struct gsusb_device_mode {
+  uint32_t mode;
+  uint32_t flags;
+} __packed;
+
+
 
 // Bit Timing Const Definitions
 #define GSUSB_FEATURE_LISTEN_ONLY (1 << 0)

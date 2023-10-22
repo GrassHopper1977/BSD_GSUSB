@@ -1,32 +1,14 @@
 #include <unistd.h>
 #include <signal.h>
 #include "gsusb.h"
-#define LOG_LEVEL   3
+#define LOG_LEVEL   6
 #include "utils/logs.h"
 #include "utils/timestamp.h"
 
 #define TAG "test.c"
 
-// #define TIMING_OPTION_1  // Using nanosleep()
-#define TIMING_OPTION_2  // Using our nanos functions.
-// #define TIMING_OPTION_3  // Using clock(). Useless on this system since CLOCK_PER_SEC is only 128! This must be clock(3c) not clock(3)!
-
-
-#ifdef TIMING_OPTION_1
-#define TX_TIME_NS  7812500 // = 7812.5us = 7.8125ms
-// struct timespec remaining, request = {0, TX_TIME_NS };
-// struct timespec remaining, request = {0, TX_TIME_NS - 1000000 };
-struct timespec remaining, request = {0, TX_TIME_NS - (TX_TIME_NS * 0.125) }; // fudge factor to achieve our desired target
-#endif
-#ifdef TIMING_OPTION_2
 #define TX_TIME_NS  7812500 // = 7812.5us = 7.8125ms
 #define SLEEP_TIME  1  // sleep time in us e.g. 1000 = 1ms, 
-// struct timespec remaining, request = {0, 1000 }; // fudge factor to achieve our desired target
-#endif
-#ifdef TIMING_OPTION_3
-#define SLEEP_TIME  10  // sleep time in us e.g. 1000 = 1ms
-#define TX_TIME_US (7813)  // Nearest we can get to 7812.5us
-#endif
 
 struct gsusb_ctx ctx;
 
@@ -44,12 +26,7 @@ void sigint_handler(int sig) {
 }
 
 int main(void) {
-#ifdef TIMING_OPTION_2
   uint64_t now, trigger;
-#endif
-#ifdef TIMING_OPTION_3
-  clock_t now, trigger;
-#endif
 
   // Create the signal handler here - ensures that Ctrl-C gets passed back up to 
   signal(SIGINT, sigint_handler);
@@ -75,45 +52,29 @@ int main(void) {
   // Write items from the CAN bus, display them and then reply.
   uint32_t count = 0;
   struct can_frame frame = {
-    .can_id = 0x2008001 & CAN_EFF_FLAG,
+    .can_id = 0x02008001 | CAN_EFF_FLAG,
     .len = 2,
     .data = { 0, 0, 0, 0, 0, 0, 0, 0 }
   };
   struct can_frame frame2;
-#ifdef TIMING_OPTION_2
   trigger = nanos() + TX_TIME_NS;
-#endif
-#ifdef TIMING_OPTION_3
-  now = clock();
-  trigger = now + TX_TIME_US;
-  LOGI(TAG, "1. now = %d, trigger = %d", now, trigger);
-#endif
-  uint64_t loopstart = nanos();
   while(1) {
-    loopstart = nanos();  
-    LOGI(TAG, "1. %10luns - before gsusbRead()", nanos()- loopstart);
     int reply = gsusbRead(&ctx, &frame2);
-    LOGI(TAG, "2. %10luns - after gsusbRead()", nanos()- loopstart);
-#ifdef TIMING_OPTION_2
+    if(reply == GSUSB_OK) {
+      LOGI(TAG, " IN ID: %08x, len: %u, Data: %02x %02x %02x %02x %02x %02x %02x %02x", frame2.can_id, frame2.len,
+        frame2.data[0], frame2.data[1], frame2.data[2], frame2.data[3], frame2.data[4], frame2.data[5], frame2.data[6], frame2.data[7]);
+    }
     now = nanos();
     if(now >= trigger) {
-      LOGI(TAG,"target-now = %luns", now-trigger);
       trigger = nanos() + TX_TIME_NS;
-#endif
-#ifdef TIMING_OPTION_3
-    now = clock();
-    LOGI(TAG, "2. now = %d, trigger = %d", now, trigger);
-    if(now >= trigger) {
-      trigger = now + TX_TIME_US;
-      LOGI(TAG, "3. now = %d, trigger = %d", now, trigger);
-#endif
-      printf("count = %04x\r", count);
       frame.data[0] = count &0x00ff;
       frame.data[1] = (count >> 8) &0x00ff;
       reply = gsusbWrite(&ctx, &frame);
       switch(reply) {
         case GSUSB_OK:
-          LOGI(TAG, "Message sent!");
+          // LOGI(TAG, "Message sent!");
+          LOGI(TAG, "OUT ID: %08x, len: %u, Data: %02x %02x %02x %02x %02x %02x %02x %02x", frame2.can_id, frame2.len,
+            frame2.data[0], frame2.data[1], frame2.data[2], frame2.data[3], frame2.data[4], frame2.data[5], frame2.data[6], frame2.data[7]);
           break;
         case GSUSB_ERROR_TIMEOUT:
           LOGE(TAG, "Message Tx timedout!");
@@ -124,21 +85,8 @@ int main(void) {
       }
       count++;
       count &= 0x03FF;
-#ifdef TIMING_OPTION_2
-    }
-    // uint64_t before = nanos();
-    usleep(SLEEP_TIME);
-    // LOGI(TAG, "usleep(%u) lasted %luns", SLEEP_TIME, nanos()-before);
-    // nanosleep(&request, &remaining);
-    // LOGI(TAG, "nanosleep(%lu) lasted %luns", request.tv_nsec, nanos()-before);
-#endif
-#ifdef TIMING_OPTION_3
     }
     usleep(SLEEP_TIME);
-#endif
-#ifdef TIMING_OPTION_1
-    nanosleep(&request, &remaining);
-#endif
   }
   
   LOGI(TAG, "Closing device");

@@ -1,6 +1,6 @@
 // gsusb.c
 
-#define LOG_LEVEL   0
+#define LOG_LEVEL   6
 #include "utils/logs.h"
 #include "utils/timestamp.h"
 #include "locals.h"
@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/endian.h>
+#include <pthread.h>
 
 
 #define TAG "libGSUSB"
@@ -34,23 +35,85 @@ enum gsusb_breq {
   GSUSB_BREQ_GET_STATE,
 };
 
-enum gsusb_mode {
-  GSUSB_MODE_RESET = 0, // Reset a channel, turns it off
-  GSUSB_MODE_START,   // Start a channel
-};
+int release_tx_context(struct gsusb_ctx *ctx, uint32_t tx_echo_id);
 
+static pthread_mutex_t rxBufferMutex = NULL;  // Mutex to control threaded access to read data buffer
+static pthread_t rxThreadId = NULL;
+static uint8_t eventRunFlag = FALSE;
 
-void sigint_handler(int sig) {
-  LOGE(TAG, "\nSignal received (%i).\n", sig);
+int read_packet(struct gsusb_ctx *ctx) {
+  struct host_frame data;
+  struct can_frame frame;
+  memset(&data, 0, sizeof(data));
+  int len = 0;
+  int ret = libusb_bulk_transfer(ctx->devh, ENDPOINT_IN, (uint8_t*) &data, sizeof(data), &len, 0);
+  if(ret == 0) {
+    if(data.can_id & CAN_ERR_FLAG) {
+    } else if((data.channel >= GSUSB_MAX_CHANNELS) || (data.can_dlc > CAN_MAX_DLC)) {
+    } else {
+      release_tx_context(ctx, le32toh(data.echo_id));
+      frame.can_id = le32toh(data.can_id);
 
-  if(sig == SIGINT) {
-    // Make sure the signal is passed down the line correctly.
-    signal(SIGINT, SIG_DFL);
-    kill(getpid(), SIGINT);
+      frame.len = data.can_dlc;
+      if(frame.len > CAN_MAX_DLC) {
+        frame.len = CAN_MAX_DLC;
+      }
+
+      for(int i = 0; i < CAN_MAX_DLC; i++) {
+        if(i < frame.len) {
+          frame.data[i] = data.data[i];
+        } else {
+          frame.data[i] = 0x00;
+        }
+      }
+
+      // LOGI(TAG, "ID: %08x, len: %u, Data: %02x %02x %02x %02x %02x %02x %02x %02x", frame.can_id, frame.len,
+      //   frame.data[0], frame.data[1], frame.data[2], frame.data[3], frame.data[4], frame.data[5], frame.data[6], frame.data[7]);
+
+      pthread_mutex_lock(&rxBufferMutex);  // Lock rxBuffer
+      // If we don't have space in the buffer, data will be discarded.
+      if(ctx->rx_buffer_count < RX_BUFFER_SIZE) {
+        memcpy(&ctx->rxBuffer[ctx->rx_buffer_count], &frame, sizeof(struct can_frame));
+        ctx->rx_buffer_count++;
+      } else {
+        ctx->flags |= GSUSB_FLAGS_RX_OVERFLOW;
+      }
+      pthread_mutex_unlock(&rxBufferMutex);  // Unlock rxBuffer
+    }
   }
+
+  return ret;
 }
 
-#define BITRATE_DATA_LEN (20)
+static void * EventHandler(void * eventContext)
+{
+  printf("Enter event handler\n");
+  while (eventRunFlag == TRUE) {
+    read_packet((struct gsusb_ctx *)eventContext);
+  }
+  printf("Exit event handler\n");
+  
+  pthread_exit(NULL);  // Terminate thread
+}
+
+static ssize_t GetRxBuffer(struct gsusb_ctx *ctx, struct can_frame* frame) {
+  int ret = 0;
+  pthread_mutex_lock(&rxBufferMutex);  // Lock local data buffer
+  if (ctx->rx_buffer_count > 0) {
+    // Buffer contains all data required
+    ctx->rx_buffer_count--;
+    memcpy(frame, &ctx->rxBuffer[0], sizeof(struct can_frame));  // Copy data to buffer
+    memmove(ctx->rxBuffer, &ctx->rxBuffer[1], sizeof(struct can_frame) * (RX_BUFFER_SIZE - 1));  // Move remaining data in buffer to start
+    ret = sizeof(struct can_frame);
+    ctx->flags &= ~GSUSB_FLAGS_RX_OVERFLOW;
+    // LOGI(TAG, "ID: %08x, len: %u, Data: %02x %02x %02x %02x %02x %02x %02x %02x", frame->can_id, frame->len,
+    //     frame->data[0], frame->data[1], frame->data[2], frame->data[3], frame->data[4], frame->data[5], frame->data[6], frame->data[7]);
+  }
+  pthread_mutex_unlock(&rxBufferMutex);  // Unlock local data buffer
+
+  return ret;
+}
+
 // These are the speed settings. We'd like to offer custom bitrates and sample points too.
 int set_bitrate(struct gsusb_ctx *ctx, uint8_t prop, uint8_t seg1, uint8_t seg2, uint8_t sjw, uint16_t brp) {
   LOGI(TAG, "Setting bitrate...");
@@ -58,7 +121,7 @@ int set_bitrate(struct gsusb_ctx *ctx, uint8_t prop, uint8_t seg1, uint8_t seg2,
   uint8_t bReq = GSUSB_BREQ_BITTIMING;            // the request field for this packet
   uint16_t wVal = 0x0000;         // the value field for this packet
   uint16_t wIndex = 0x0000;       // the index field for this packet
-  uint16_t wLen = BITRATE_DATA_LEN;   // length of this setup packet 
+  uint16_t wLen = 20;   // length of this setup packet 
   unsigned char data[] = {
     prop, 0x00, 0x00, 0x00, // Prop seg
     seg1, 0x00, 0x00, 0x00, // Phase Seg 1
@@ -227,7 +290,7 @@ int port_get_bit_timing(struct gsusb_ctx *ctx) {
   return ret;
 }
 
-int port_open(struct gsusb_ctx *ctx) {
+int port_open(struct gsusb_ctx *ctx, uint32_t mode_flags) {
   LOGI(TAG, "Opening the port (GSUSB_BREQ_MODE)");
   uint8_t bmReqType = 0x41;       // the request type (direction of transfer)
   uint8_t bReq = GSUSB_BREQ_MODE;            // the request field for this packet
@@ -235,15 +298,15 @@ int port_open(struct gsusb_ctx *ctx) {
   uint16_t wIndex = 0x0000;       // the index field for this packet
   
   // the data buffer for the in/output data
-  unsigned char data[] = {
-    0x01, 0x00, 0x00, 0x00, // CAN_MODE_START
-    0x00, 0x00, 0x00, 0x00 
+  struct gsusb_device_mode data = {
+    .mode = htole32(GSUSB_MODE_START),
+    .flags = htole32(mode_flags)
   };
   uint16_t wLen = sizeof(data);   // length of this setup packet 
   unsigned int to = 0;    // timeout duration (if transfer fails)
-
+  
   // transfer the setup packet to the USB device
-  int config = libusb_control_transfer(ctx->devh, bmReqType, bReq, wVal, wIndex, data, wLen, to);
+  int config = libusb_control_transfer(ctx->devh, bmReqType, bReq, wVal, wIndex, (unsigned char*)(&data), wLen, to);
 
   return config;
 }
@@ -255,15 +318,15 @@ int port_close(struct gsusb_ctx *ctx) {
   uint16_t wVal = 0x0000;         // the value field for this packet
   uint16_t wIndex = 0x0000;       // the index field for this packet
   // the data buffer for the in/output data
-  unsigned char data[] = {
-    0x00, 0x00, 0x00, 0x00, // CAN_MODE_RESET
-    0x00, 0x00, 0x00, 0x00
+  struct gsusb_device_mode data = {
+    .mode = 0,
+    .flags = 0
   };
   uint16_t wLen = sizeof(data);   // length of this setup packet 
   unsigned int to = 0;    // timeout duration (if transfer fails)
 
   // transfer the setup packet to the USB device
-  int config = libusb_control_transfer(ctx->devh, bmReqType, bReq, wVal, wIndex, data, wLen, to);
+  int config = libusb_control_transfer(ctx->devh, bmReqType, bReq, wVal, wIndex, (unsigned char*)(&data), wLen, to);
 
   return config;
 }
@@ -273,6 +336,7 @@ int gsusbInit(struct gsusb_ctx *ctx) {
   //libusb_set_debug(NULL, LIBUSB_LOG_LEVEL_INFO);
 
   memset(ctx, 0, sizeof(struct gsusb_ctx));
+  ctx->frameSize = sizeof(struct can_frame);
   int ret = libusb_init(&(ctx->libusb_ctx));
   if (ret < 0) {
     LOGE(TAG, "Failed to initialize libusb (ret = %d)\n", ret);
@@ -407,7 +471,6 @@ int gsusbOpen(struct gsusb_ctx *ctx, uint8_t deviceNo, uint8_t prop, uint8_t seg
       ret = GSUSB_ERROR_UNABLE_TO_CLAIM;
     }
 
-
     LOGI(TAG, "Setting up for comms...");
     reply = port_set_user_id(ctx);
     if(reply < 0) {
@@ -437,15 +500,32 @@ int gsusbOpen(struct gsusb_ctx *ctx, uint8_t deviceNo, uint8_t prop, uint8_t seg
     }
 
     LOGI(TAG, "Opening port...");
-    reply = port_open(ctx);
+    reply = port_open(ctx, 0);
     if(reply < 0) {
       LOGE(TAG, "ERROR! Unable to open port.");
       ret = GSUSB_ERROR_UNABLE_TO_OPEN_PORT;
     } else {
-      ctx->flags |= GSUSB_FLAGS_PORT_OPEN;
+      // Event thread created successfully, so init. mutex & submit the transfer
+      pthread_mutex_init(&rxBufferMutex, NULL);  // Init. mutex
+      // Create libusb event thread
+      eventRunFlag = TRUE;  // Run event handler function loop
+      if (pthread_create(&rxThreadId, NULL, EventHandler, (void *)ctx) == 0)
+      {
+        // Thread started.
+        ctx->flags |= GSUSB_FLAGS_PORT_OPEN;
+        LOGI(TAG, "USB to CAN device is connected!");
+        ret = GSUSB_OK;
+      }
+      else
+      {
+        LOGE(TAG, "Unable to create thread.");
+        ret = GSUSB_ERROR_THREADING;
+      }
     }
-    LOGI(TAG, "USB to CAN device is connected!");
+  }
 
+  if(ret != GSUSB_OK) {
+    gsusbExit(ctx);
   }
 
   return ret;
@@ -453,12 +533,19 @@ int gsusbOpen(struct gsusb_ctx *ctx, uint8_t deviceNo, uint8_t prop, uint8_t seg
 
 void gsusbClose(struct gsusb_ctx *ctx) {
   int ret = 0;
+  LOGI(TAG, "Closing USB connection.");
   if(ctx->flags & GSUSB_FLAGS_PORT_OPEN) {
     ret = port_close(ctx);
     if(ret < 0) {
       LOGE(TAG, "ERROR! Unable to close port.");
     }
     ctx->flags &= ~GSUSB_FLAGS_PORT_OPEN;
+  }
+  eventRunFlag = FALSE;
+  libusb_close(ctx->devh);  // Close conn. & wake up event handler function
+  if(rxThreadId != NULL) {
+    rxThreadId = NULL;
+    pthread_join(rxThreadId, NULL);  // Wait for event handler thread to terminate
   }
   if(ctx->flags & GSUSB_FLAGS_LIBUSB_OPEN) {
     ret = libusb_attach_kernel_driver(ctx->devh, ctx->interface);
@@ -767,119 +854,15 @@ void handleRetries(struct gsusb_ctx *ctx) {
   }
 }
 
-int read_packet(struct gsusb_ctx *ctx, struct can_frame* frame) {
-  struct host_frame data;
-  memset(&data, 0, sizeof(data));
-  int len = 0;
-  uint64_t now = nanos();
-  printf("%10luns Before libusb_bulk_transfer()\n", nanos() - now);
-  int ret = libusb_bulk_transfer(ctx->devh, ENDPOINT_IN, (uint8_t*) &data, sizeof(data), &len, 1);
-  printf("%10luns After libusb_bulk_transfer()\n", nanos() - now);
-  if(ret == 0) {
-    // if(len != sizeof(data)) {
-    //   // LOGE(TAG, "Size mismatch! sizeof(data) = %lu, len = %u, ret = %x", sizeof(data), len, ret);
-    //   // print_host_frame_raw(&data);
-    //   // fflush(stdout);
-    // }
-
-    if(data.can_id & CAN_ERR_FLAG) {
-      // print_host_frame(TAG, &data, 1, "");
-      // print_host_frame_raw(&data);
-    } else if((data.channel >= GSUSB_MAX_CHANNELS) || (data.can_dlc > CAN_MAX_DLC)) {
-      // print_host_frame(TAG, &data, 1, "");
-      // print_host_frame_raw(&data);
-    } else {
-      int tmp1 = release_tx_context(ctx, le32toh(data.echo_id));
-      // if(tmp1 > 0) {
-      //   print_host_frame(TAG, &data, 0, "Context Released");
-      // } else if(tmp1 == 0) {
-      //   print_host_frame(TAG, &data, 0, "");
-      // } else if(tmp1 == -2) {
-      //   print_host_frame(TAG, &data, 1, "echo_id: %08x (%u) is invalid! TOO LARGE - ERROR!.", data.echo_id, data.echo_id);
-
-      //   print_host_frame_raw(&data);
-      //   fflush(stdout);
-      // } else if(tmp1 == -1) {
-      //   // print_host_frame("CAN", "IN", &data, 1, "Context Error");
-      //   print_host_frame(TAG, &data, 1, "echo_id %08x (%u) is invalid! MISMATCH with %08x (%u). - ERROR!.", data.echo_id, data.echo_id, ctx->tx_context[data.echo_id].echo_id, ctx->tx_context[data.echo_id].echo_id);
-
-      //   print_host_frame_raw(&data);
-      //   fflush(stdout);
-      // } else if(tmp1 < 0) {
-      //   print_host_frame(TAG, &data, 1, "Context Error");
-
-      //   print_host_frame_raw(&data);
-      //   fflush(stdout);
-      // }
-
-      frame->can_id = le32toh(data.can_id);
-
-      frame->len = data.can_dlc;
-      if(frame->len > CAN_MAX_DLC) {
-        frame->len = CAN_MAX_DLC;
-      }
-
-      for(int i = 0; i < CAN_MAX_DLC; i++) {
-        if(i < frame->len) {
-          frame->data[i] = data.data[i];
-        } else {
-          frame->data[i] = 0x00;
-        }
-      }
-
-    }
-  // } else if(ret != LIBUSB_ERROR_TIMEOUT) {
-  //   switch(ret) {
-  //   // case LIBUSB_ERROR_TIMEOUT:
-  //   //   // print_host_frame("CAN", "IN", &data, 1, "LIBUSB_ERROR_TIMEOUT");
-  //   //   break;
-  //   case LIBUSB_ERROR_PIPE:
-  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_PIPE");
-  //     break;
-  //   case LIBUSB_ERROR_OVERFLOW:
-  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_OVERFLOW");
-  //     break;
-  //   case LIBUSB_ERROR_NO_DEVICE:
-  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_NO_DEVICE");
-  //     break;
-  //   case LIBUSB_ERROR_BUSY:
-  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_BUSY");
-  //     break;
-  //   case LIBUSB_ERROR_INVALID_PARAM:
-  //     print_host_frame(TAG, &data, 1, "LIBUSB_ERROR_INVALID_PARAM");
-  //     break;
-  //   default:
-  //     print_host_frame(TAG, &data, 1, "UKNOWN (0x%08x)", ret);
-  //     break;
-  //   }
-  //   fflush(stdout);
-  }
-
-  return ret;
-}
-
 int gsusbRead(struct gsusb_ctx *ctx, struct can_frame* frame) {
   int rep = GSUSB_ERROR_TIMEOUT;
-  int ret = read_packet(ctx, frame);
-
-  switch(ret) {
-    case 0:
-      rep = GSUSB_OK;
-      break;
-    case LIBUSB_ERROR_TIMEOUT:
-      rep = GSUSB_ERROR_TIMEOUT;
-      break;
-    case LIBUSB_ERROR_NO_DEVICE:
-      rep = GSUSB_ERROR_NO_DEVICE;
-      break;
-    default:
-      rep = GSUSB_ERROR_READING;
-      break;
+  int ret = GetRxBuffer(ctx, frame);
+  if(ret >= ctx->frameSize) {
+    rep = GSUSB_OK;
+  } else if(ret > 0) {
+    rep = GSUSB_ERROR_READING;
   }
 
-  if(GSUSB_ERROR_NO_DEVICE == rep) {
-    LOGE(TAG, "No CAN device!");
-  }
   handleRetries(ctx);
   return rep;
 }
@@ -921,8 +904,8 @@ int send_packet(struct gsusb_ctx *ctx, struct can_frame* frame) {
   }
   if(ret == 0) {
     // print_can_frame(TAG, frame, 0, "SUCCESS");
-    print_host_frame(TAG, &data, 0, "Tx Queue");
-    fflush(stdout);
+    // print_host_frame(TAG, &data, 0, "Tx Queue");
+    // fflush(stdout);
   } else if (ret == LIBUSB_ERROR_TIMEOUT) {
     // print_can_frame(TAG, frame, 1, "TIMEOUT");
   } else {

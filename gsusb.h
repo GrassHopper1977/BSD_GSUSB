@@ -8,6 +8,7 @@
 // We keep track of how many are in play at a time by setting the echo_id and
 // looking for it when it comes back.
 #define GSUSB_MAX_TX_REQ  (10)
+#define RX_BUFFER_SIZE (30)
 
 #define GSUSB_OK                          (0)
 #define GSUSB_ERROR_GENERAL               (-1)
@@ -28,9 +29,11 @@
 #define GSUSB_ERROR_READING               (-16)
 #define GSUSB_ERROR_TIMEOUT               (-17)
 #define GSUSB_ERROR_WRITING               (-18)
+#define GSUSB_ERROR_THREADING             (-19)
 
 #define GSUSB_FLAGS_LIBUSB_OPEN   (0x01)
 #define GSUSB_FLAGS_PORT_OPEN     (0x02)
+#define GSUSB_FLAGS_RX_OVERFLOW   (0x04)
 
 /// @brief Bit Timing struct
 struct gsusb_device_bt_const {
@@ -73,6 +76,9 @@ struct gsusb_ctx {
   struct gsusb_device_bt_const bt_const;
   struct gsusb_device_config device_config;
   struct gsusb_tx_context tx_context[GSUSB_MAX_TX_REQ];
+  uint32_t rx_buffer_count;
+  struct can_frame rxBuffer[RX_BUFFER_SIZE];
+  ssize_t frameSize;
 };
 
 int gsusbInit(struct gsusb_ctx *ctx);
