@@ -1,6 +1,6 @@
 // gsusb.c
 
-#define LOG_LEVEL   6
+// #define LOG_LEVEL   6
 #include "utils/logs.h"
 #include "utils/timestamp.h"
 #include "locals.h"
@@ -87,11 +87,11 @@ int read_packet(struct gsusb_ctx *ctx) {
 
 static void * EventHandler(void * eventContext)
 {
-  printf("Enter event handler\n");
+  LOGI(TAG, "Enter event handler");
   while (eventRunFlag == TRUE) {
     read_packet((struct gsusb_ctx *)eventContext);
   }
-  printf("Exit event handler\n");
+  LOGI(TAG, "Exit event handler");
   
   pthread_exit(NULL);  // Terminate thread
 }
